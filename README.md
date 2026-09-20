@@ -5,15 +5,24 @@
 按 `E` 触发选牌，程序在 W 技能的三张牌里认出黄牌并自动按 `W` 锁定。
 另带一个自动移动：按住鼠标右键时，反复按下你指定的键。
 
-## 运行
+## 下载
 
-需要 **管理员权限**——游戏是管理员权限运行时，非管理员的热键和模拟按键都不生效。
+不想装 Python 的话，直接下打包好的版本：
+
+**[Releases](https://github.com/17601413731/mingding/releases/latest)** → `mingding-win64.zip`
+
+解压后是整个 `mingding` 文件夹，**右键 `mingding.exe` → 以管理员身份运行**。
+游戏是管理员权限运行时，非管理员的热键和模拟按键都不生效。
+
+版本从 `v1.0.0` 起，每个 Release 都带一份现成的 zip，不需要自己打包。
+
+## 从源码运行
 
 ```bash
 python mingding.py
 ```
 
-直接跑源码需要：`PySide6`、`opencv-python`、`numpy`、`dxcam`、`keyboard`、`pydirectinput`。
+需要 **管理员权限**。依赖：`PySide6`、`opencv-python`、`numpy`、`dxcam`、`keyboard`、`pydirectinput`。
 
 调试界面时用这两个参数，它们不会碰游戏、也不会注册热键：
 
@@ -95,6 +104,20 @@ cv2 的 ffmpeg 视频解码器（27.3 MB）和 Qt 自带翻译（6.4 MB）——
 改过排除列表之后，一定要实际跑一次 `dist\mingding\mingding.exe` 验证——排错了不会打包失败，
 而是运行时崩溃。
 
+### 发版
+
+`.github\release-notes.md` 是 Release 的说明正文，发新版本时改它（顺便把里面的下载说明一起改）。
+
+```powershell
+build_mingding.bat
+Compress-Archive -Path dist\mingding -DestinationPath dist\mingding-win64.zip -Force
+python tools\upload_release.py v1.0.0
+```
+
+`tools\upload_release.py` 会建 Release（已存在就复用）并把 zip 传成 asset。
+它从 git 的 credential helper 取 token，只读小请求用 urllib，传大文件用 curl——
+本机直连 github 会传到一半被重置，所以两者都走 git 里配的那个 SOCKS5 代理。
+
 其它注意事项：
 
 - 首次运行如果被杀毒软件拦截，需要加入白名单。
@@ -165,7 +188,8 @@ theme.py        设计令牌与样式表
 engine.py       截图采集、选牌状态机、自动移动线程（不含任何界面代码）
 config.py       配置读写
 tests/          回归测试
-tools/          标定与打包用的小工具
+tools/          标定用的小工具 + upload_release.py（发版上传）
+.github/        release-notes.md：Release 说明正文
 assets/         标定素材与图标
 legacy/         早期版本，保留备查
 ```
