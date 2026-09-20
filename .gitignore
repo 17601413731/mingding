@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller 产物
+build/
+dist/
+
+# 本机配置：每个用户的按键与间隔各不相同，不进版本库
+config.json
+config.json.tmp
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
