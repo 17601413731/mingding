@@ -1,7 +1,12 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 
-img = cv2.imread("yellow_card.png")
+# 相对本脚本定位，双击运行或从任何目录运行都能找到素材
+IMAGE = Path(__file__).resolve().parent.parent / "assets" / "yellow_card.png"
+
+img = cv2.imread(str(IMAGE))
 hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
 # =====================
