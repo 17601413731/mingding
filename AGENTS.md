@@ -1,65 +1,21 @@
-# AGENTS.md
+# Repository Guidelines
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+## Project Structure & Module Organization
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+`mingding.py` is the application entry point. `window.py` and `widgets.py` implement the PySide6 interface; `theme.py` holds shared visual constants. `engine.py` owns screen capture, card detection, and key input, while `config.py` loads and validates settings. Regression tests live in `tests/`, with image fixtures in `assets/`. `tools/` contains calibration, icon, and release helpers. `legacy/` preserves the pre-refactor implementations; make active changes in the root modules.
 
-## 1. Think Before Coding
+## Build, Test, and Development Commands
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+Run these from the repository root on Windows. Install the runtime packages with `python -m pip install PySide6 opencv-python numpy dxcam keyboard pydirectinput`; the repository has no dependency manifest. Use `python mingding.py --ui-only` to inspect the UI without starting capture or hotkeys, or `python mingding.py --screenshot out.png` to render it to a file. `python mingding.py` runs the full app and may need administrator rights for game input. `python -m unittest discover -s tests` runs all tests. `build_mingding.bat` packages the app with PyInstaller using `mingding.spec`; install PyInstaller first. The distributable is the entire `dist\mingding\` directory.
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+## Coding Style & Naming Conventions
 
-## 2. Simplicity First
+Follow the existing Python style: four-space indentation, `snake_case` functions and modules, `PascalCase` classes, and uppercase constants. Keep detection and input behavior in `engine.py`; communicate with the UI through the existing callback and Qt signal boundary. Put shared UI colors, fonts, and spacing in `theme.py`. No formatter or linter is configured, so keep edits consistent with nearby code.
 
-**Minimum code that solves the problem. Nothing speculative.**
+## Testing Guidelines
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+Tests use the standard-library `unittest` framework. Name new files `test_*.py` and methods `test_*`. Add detection regressions against `assets/` images in `tests/test_detect.py`; add configuration cases in `tests/test_config.py` using temporary paths, never a contributor's `config.json`. There is no stated coverage threshold. After changing `mingding.spec`, also launch `dist\mingding\mingding.exe` to catch runtime packaging errors.
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+## Commits, Pull Requests & Configuration
 
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+Recent commits use `feat:` and `chore:` prefixes followed by concise descriptions; follow that pattern and choose a prefix matching the change. In pull requests, describe behavior changes, list the test command and result, and include a screenshot for UI changes. Keep `config.json`, `build/`, and `dist/` out of commits; they are ignored local settings and generated output. Update `.github/release-notes.md` when preparing a release.

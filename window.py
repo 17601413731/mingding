@@ -11,7 +11,7 @@ import threading
 import winsound
 
 import keyboard
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, Signal, QTimer
 from PySide6.QtGui import QAction, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -27,13 +28,26 @@ from PySide6.QtWidgets import (
 
 import config
 import engine
+import input_keys
 import theme
-from widgets import CardFanMark, FeatureCard, MoveSettingsRow, card_fan_pixmap
+from widgets import (
+    CardFanMark,
+    FeatureCard,
+    MoveSettingsRow,
+    SelectSettings,
+    card_fan_pixmap,
+    pretty_key,
+)
 
-WINDOW_WIDTH = 420
+WINDOW_WIDTH = 470
+CARD_LABELS = {"blue": "蓝牌", "yellow": "黄牌", "red": "红牌"}
 
-# 选牌功能自己要按的键，别的功能不能抢
-RESERVED_KEYS = (engine.TRIGGER_KEY, engine.CONFIRM_KEY)
+# W 是程序发出的游戏技能键，不能分配给其它功能。
+RESERVED_KEYS = (engine.CONFIRM_KEY, "mouse_right")
+KEY_SLOTS = (
+    "hotkey_select", "hotkey_move", "move_key",
+    "card_key_blue", "card_key_yellow", "card_key_red",
+)
 
 
 def play_toggle_sound(enabled: bool):
@@ -78,10 +92,19 @@ class MainWindow(QWidget):
             "key": cfg["move_key"],
             "interval": cfg["move_interval_ms"] / 1000.0,
         }
+        self.selection = {
+            color: cfg[f"card_key_{color}"] for color in config.CARD_COLORS
+        }
+        self.capture_paused = threading.Event()
 
         self.bridge = Bridge()
         self.bridge.message.connect(self._on_message)
         self._hotkeys = {}
+        self._mouse_hotkeys = {}
+        self._mouse_hotkey_states = {}
+        self._mouse_hotkey_timer = QTimer(self)
+        self._mouse_hotkey_timer.setInterval(10)
+        self._mouse_hotkey_timer.timeout.connect(self._poll_mouse_hotkeys)
         self._hotkeys_suspended = False
         self._threads = []
         self._tray_notice_shown = False
@@ -119,13 +142,15 @@ class MainWindow(QWidget):
         )
         root.setSpacing(0)
 
-        root.addLayout(self._build_header())
+        header = QWidget()
+        header.setLayout(self._build_header())
+        header.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        root.addWidget(header)
         root.addSpacing(18)
 
         self.select_card = FeatureCard(
-            "选牌",
-            f"按 {engine.TRIGGER_KEY.upper()} 开始，认出黄牌自动按 "
-            f"{engine.CONFIRM_KEY.upper()}",
+            "自由选牌",
+            "每张牌各有一个按键；按对应键后程序按 W 轮牌，出现该牌时再按 W 锁定。",
             self.cfg["hotkey_select"],
         )
         self.select_card.toggled.connect(self._apply_select)
@@ -134,11 +159,19 @@ class MainWindow(QWidget):
         )
         self.select_card.key_cap.captureStarted.connect(self._suspend_hotkeys)
         self.select_card.key_cap.captureFinished.connect(self._resume_hotkeys)
+        self.select_settings = SelectSettings(self.selection)
+        self.select_settings.cardKeyChanged.connect(self._change_card_key)
+        for field in self.select_settings.fields.values():
+            field.captureStarted.connect(self._suspend_hotkeys)
+            field.captureFinished.connect(self._resume_hotkeys)
+        self.select_card.add_content(self.select_settings)
         root.addWidget(self.select_card)
         root.addSpacing(theme.GAP_CARDS)
 
         self.move_card = FeatureCard(
-            "自动移动", "按住鼠标右键，反复按下面这个键", self.cfg["hotkey_move"]
+            "自由移动",
+            "减少长时间反复点击鼠标导致的手疼。",
+            self.cfg["hotkey_move"],
         )
         self.move_card.toggled.connect(self._apply_move)
         self.move_card.hotkeyRequested.connect(
@@ -162,6 +195,7 @@ class MainWindow(QWidget):
 
     def _build_header(self):
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(14)
         row.addWidget(CardFanMark(44), 0, Qt.AlignmentFlag.AlignTop)
 
@@ -177,10 +211,9 @@ class MainWindow(QWidget):
         )
         text.addWidget(wordmark)
 
-        tagline = QLabel("选牌时自动锁定黄牌")
-        tagline.setObjectName("Tagline")
-        text.addWidget(tagline)
-        text.addStretch(1)
+        self.tagline = QLabel("蓝 · 黄 · 红，按键直达")
+        self.tagline.setObjectName("Tagline")
+        text.addWidget(self.tagline)
 
         row.addLayout(text)
         row.addStretch(1)
@@ -213,12 +246,12 @@ class MainWindow(QWidget):
         menu.addAction(show_action)
         menu.addSeparator()
 
-        self.tray_select = QAction("选牌", self)
+        self.tray_select = QAction("自由选牌", self)
         self.tray_select.setCheckable(True)
         self.tray_select.triggered.connect(self._toggle_select)
         menu.addAction(self.tray_select)
 
-        self.tray_move = QAction("自动移动", self)
+        self.tray_move = QAction("自由移动", self)
         self.tray_move.setCheckable(True)
         self.tray_move.triggered.connect(self._toggle_move)
         menu.addAction(self.tray_move)
@@ -275,6 +308,10 @@ class MainWindow(QWidget):
             ("hotkey_move", "toggle_move"),
         ):
             key = self.cfg[slot]
+            if input_keys.is_mouse_key(key):
+                self._mouse_hotkeys[slot] = (key, event_name)
+                self._mouse_hotkey_states[slot] = input_keys.is_pressed(key)
+                continue
             try:
                 self._hotkeys[slot] = keyboard.add_hotkey(
                     key, lambda name=event_name: self.bridge.message.emit(name, None)
@@ -284,8 +321,20 @@ class MainWindow(QWidget):
                 self._card_for(slot).set_error(
                     f"热键 {key.upper()} 注册失败，请用管理员身份运行。{exc}"
                 )
+        if self._mouse_hotkeys:
+            self._mouse_hotkey_timer.start()
+
+    def _poll_mouse_hotkeys(self):
+        for slot, (key, event_name) in self._mouse_hotkeys.items():
+            pressed = input_keys.is_pressed(key)
+            if pressed and not self._mouse_hotkey_states[slot]:
+                self.bridge.message.emit(event_name, None)
+            self._mouse_hotkey_states[slot] = pressed
 
     def _remove_hotkeys(self):
+        self._mouse_hotkey_timer.stop()
+        self._mouse_hotkeys.clear()
+        self._mouse_hotkey_states.clear()
         for handle in self._hotkeys.values():
             try:
                 keyboard.remove_hotkey(handle)
@@ -298,6 +347,7 @@ class MainWindow(QWidget):
         if self._hotkeys_suspended:
             return
         self._hotkeys_suspended = True
+        self.capture_paused.set()
         self._remove_hotkeys()
 
     def _resume_hotkeys(self):
@@ -305,6 +355,7 @@ class MainWindow(QWidget):
             return
         self._hotkeys_suspended = False
         self._register_hotkeys()
+        self.capture_paused.clear()
 
     def _card_for(self, slot):
         return self.select_card if slot == "hotkey_select" else self.move_card
@@ -314,17 +365,29 @@ class MainWindow(QWidget):
     def _conflict(self, key: str, slot: str):
         """这个键能不能用在 slot 上，不能就说清楚为什么。"""
         if key in RESERVED_KEYS:
-            return f"{key.upper()} 是选牌要用的键，换一个"
+            if key == "mouse_right":
+                return "鼠标右键用于自由移动，请换一个键"
+            return f"{key.upper()} 是游戏选牌技能键，换一个"
 
-        taken = {
-            "hotkey_select": (self.cfg["hotkey_move"], self.cfg["move_key"]),
-            "hotkey_move": (self.cfg["hotkey_select"], self.cfg["move_key"]),
-            "move_key": (self.cfg["hotkey_select"], self.cfg["hotkey_move"]),
-        }[slot]
+        if slot == "move_key" and input_keys.is_mouse_key(key):
+            return "自由移动的输出键须是游戏内绑定的键盘键"
 
-        if key in taken:
-            return f"{key.upper()} 已经被别的功能占用了，换一个"
+        if any(self.cfg[other] == key for other in KEY_SLOTS if other != slot):
+            return f"{pretty_key(key)} 已经被别的功能占用了，换一个"
         return None
+
+    def _change_card_key(self, color, key):
+        slot = f"card_key_{color}"
+        problem = self._conflict(key, slot)
+        if problem:
+            self.select_settings.set_card_key(color, self.cfg[slot])
+            self.select_card.set_error(f"{CARD_LABELS[color]}：{problem}")
+            return
+
+        self.cfg[slot] = key
+        self.selection[color] = key
+        self.select_card.clear_error()
+        self._save()
 
     def _change_hotkey(self, slot, key, card):
         problem = self._conflict(key, slot)
@@ -348,12 +411,14 @@ class MainWindow(QWidget):
 
         self.cfg["move_key"] = key
         self.move["key"] = key
+        self.move_row.set_guidance(key, self.cfg["move_interval_ms"])
         self.move_card.clear_error()
         self._save()
 
     def _change_interval(self, milliseconds: int):
         self.cfg["move_interval_ms"] = milliseconds
         self.move["interval"] = milliseconds / 1000.0
+        self.move_row.set_guidance(self.cfg["move_key"], milliseconds)
         self._save()
 
     def _save(self):
@@ -373,7 +438,13 @@ class MainWindow(QWidget):
         self._threads = [
             threading.Thread(
                 target=engine.capture_loop,
-                args=(self.select_enabled, self.stop_event, self._notify),
+                args=(
+                    self.select_enabled,
+                    self.stop_event,
+                    self.selection,
+                    self.capture_paused,
+                    self._notify,
+                ),
                 daemon=True,
                 name="capture",
             ),
@@ -438,8 +509,8 @@ class MainWindow(QWidget):
             self._tray_notice_shown = True
             self.tray.showMessage(
                 "命定还在后台运行",
-                f"{self.cfg['hotkey_select'].upper()} / "
-                f"{self.cfg['hotkey_move'].upper()} 照样有效，双击托盘图标可以再打开。",
+                f"{pretty_key(self.cfg['hotkey_select'])} / "
+                f"{pretty_key(self.cfg['hotkey_move'])} 照样有效，双击托盘图标可以再打开。",
                 QSystemTrayIcon.MessageIcon.Information,
                 4000,
             )

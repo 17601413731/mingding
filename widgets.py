@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import (
     Property,
+    QObject,
     QEasingCurve,
     QPropertyAnimation,
     QRectF,
     Qt,
     Signal,
+    QTimer,
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -25,12 +27,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 import theme
+import input_keys
 
 # ============================================================
 # 按键名：keyboard 与 pydirectinput 都认识的那一批
@@ -71,16 +75,35 @@ def key_name(event) -> str | None:
 
 def pretty_key(name: str) -> str:
     """键名显示成大写，单字母和 F 键看起来更像键帽。"""
+    mouse_labels = {
+        "mouse_left": "鼠标左键",
+        "mouse_right": "鼠标右键",
+        "mouse_middle": "鼠标中键",
+        "mouse_x1": "鼠标侧键 1",
+        "mouse_x2": "鼠标侧键 2",
+    }
+    if name in mouse_labels:
+        return mouse_labels[name]
     return name.upper()
 
 
+def mouse_button_name(button) -> str | None:
+    return {
+        Qt.MouseButton.LeftButton: "mouse_left",
+        Qt.MouseButton.RightButton: "mouse_right",
+        Qt.MouseButton.MiddleButton: "mouse_middle",
+        Qt.MouseButton.BackButton: "mouse_x1",
+        Qt.MouseButton.ForwardButton: "mouse_x2",
+    }.get(button)
+
+
 # ============================================================
-# 品牌标记：三张牌，中间那张是黄牌
+# 品牌标记：三张牌，中间的默认目标是黄牌
 # ============================================================
 
 
 def card_fan_pixmap(size: int) -> QPixmap:
-    """三牌扇面。工具干的事就是从三张牌里认出黄牌，所以标记就是这件事本身。
+    """三牌扇面。中央黄牌保留默认目标的品牌记忆。
 
     托盘图标、窗口标记共用这一份画法；不用任何 Riot 素材，全是几何图形。
     """
@@ -206,6 +229,34 @@ class ToggleSwitch(QAbstractButton):
 # ============================================================
 
 
+class MouseCaptureMonitor(QObject):
+    """录制期间轮询全局鼠标状态；先等待启动录制的点击松开。"""
+
+    captured = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._armed = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(10)
+        self._timer.timeout.connect(self._poll)
+
+    def start(self):
+        self._armed = False
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+
+    def _poll(self):
+        pressed = [key for key in input_keys.MOUSE_KEYS if input_keys.is_pressed(key)]
+        if not pressed:
+            self._armed = True
+        elif self._armed and len(pressed) == 1:
+            self.stop()
+            self.captured.emit(pressed[0])
+
+
 class KeyCap(QPushButton):
     """功能牌左上角的角标——它就是这张牌的热键，点一下换一个。
 
@@ -223,22 +274,32 @@ class KeyCap(QPushButton):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setFont(theme.num_font(theme.SIZE_NOTE, QFont.Weight.DemiBold))
         self.setMinimumWidth(52)
-        self.setToolTip("点一下，然后按下你想用的键")
+        self.setToolTip("点一下，再按键盘键或鼠标键；Esc 取消")
+        self.setAccessibleName("启停快捷键")
         self._capturing = False
+        self._key = key
+        self._mouse_capture = MouseCaptureMonitor(self)
+        self._mouse_capture.captured.connect(self._commit_key)
         self.clicked.connect(self._on_clicked)
 
     def set_key(self, key: str):
+        self._key = key
         self.setText(pretty_key(key))
 
     def _set_capturing(self, capturing: bool):
         self._capturing = capturing
+        if capturing:
+            self._mouse_capture.start()
+        else:
+            self._mouse_capture.stop()
         self.setProperty("capturing", "true" if capturing else "false")
         self.style().unpolish(self)
         self.style().polish(self)
         if capturing:
-            self.setText("按键…")
+            self.setText("按键或鼠标…")
             self.setFocus(Qt.FocusReason.OtherFocusReason)
         else:
+            self.set_key(self._key)
             self.captureFinished.emit()
 
     def _on_clicked(self):
@@ -246,9 +307,24 @@ class KeyCap(QPushButton):
             self.begin_capture()
 
     def begin_capture(self):
-        self._capturing = True
         self._set_capturing(True)
         self.captureStarted.emit()
+
+    def _commit_key(self, name: str):
+        if not self._capturing:
+            return
+        self.set_key(name)
+        self.keyCaptured.emit(name)
+        self._set_capturing(False)
+
+    def mousePressEvent(self, event):
+        if self._capturing:
+            name = mouse_button_name(event.button())
+            if name:
+                self._commit_key(name)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
         if not self._capturing:
@@ -265,10 +341,7 @@ class KeyCap(QPushButton):
         if name is None:
             return
 
-        self._capturing = False
-        self.set_key(name)
-        self._set_capturing(False)
-        self.keyCaptured.emit(name)
+        self._commit_key(name)
 
     def focusOutEvent(self, event):
         if self._capturing:
@@ -278,46 +351,76 @@ class KeyCap(QPushButton):
 
 
 class KeyField(QLineEdit):
-    """自动移动按下的键。点一下进入录制，按什么就是什么。"""
+    """可复用的按键录制框；Esc 取消后恢复原键。"""
 
     captureStarted = Signal()
     captureFinished = Signal()
     keyCaptured = Signal(str)
 
-    def __init__(self, key: str, parent=None):
+    def __init__(self, key: str, parent=None, allow_mouse: bool = True):
         super().__init__(parent)
         self.setObjectName("KeyField")
         self.setReadOnly(True)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFont(theme.num_font(theme.SIZE_BODY, QFont.Weight.DemiBold))
-        self.setFixedWidth(64)
-        self.setToolTip("点一下，然后按下你想用的键")
+        self.setFixedWidth(96 if allow_mouse else 64)
+        self.setToolTip("点一下，再按键盘键或鼠标键；Esc 取消" if allow_mouse else "点一下，再按游戏内绑定的键盘键；Esc 取消")
         self._capturing = False
+        self._key = key
+        self._allow_mouse = allow_mouse
+        self._mouse_capture = MouseCaptureMonitor(self) if allow_mouse else None
+        if self._mouse_capture:
+            self._mouse_capture.captured.connect(self._commit_key)
         self.set_key(key)
 
     def set_key(self, key: str):
+        self._key = key
         self.setText(pretty_key(key))
 
     def _set_capturing(self, capturing: bool):
         self._capturing = capturing
+        if self._mouse_capture:
+            if capturing:
+                self._mouse_capture.start()
+            else:
+                self._mouse_capture.stop()
         self.setProperty("capturing", "true" if capturing else "false")
         self.style().unpolish(self)
         self.style().polish(self)
         if capturing:
-            self.setText("按键…")
+            self.setText("按键或鼠标…" if self._allow_mouse else "按键…")
         else:
+            self.set_key(self._key)
             self.captureFinished.emit()
 
     def mousePressEvent(self, event):
         if not self._capturing:
-            self._capturing = True
-            self._set_capturing(True)
-            self.captureStarted.emit()
+            self.begin_capture()
+        elif self._allow_mouse:
+            mouse_name = mouse_button_name(event.button())
+            if mouse_name:
+                self._commit_key(mouse_name)
         event.accept()
+
+    def begin_capture(self):
+        self._set_capturing(True)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.captureStarted.emit()
+
+    def _commit_key(self, name: str):
+        if not self._capturing:
+            return
+        self.set_key(name)
+        self.keyCaptured.emit(name)
+        self._set_capturing(False)
 
     def keyPressEvent(self, event):
         if not self._capturing:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+                self.begin_capture()
+                event.accept()
+                return
             super().keyPressEvent(event)
             return
 
@@ -331,10 +434,7 @@ class KeyField(QLineEdit):
         if name is None:
             return
 
-        self._capturing = False
-        self.set_key(name)
-        self._set_capturing(False)
-        self.keyCaptured.emit(name)
+        self._commit_key(name)
 
     def focusOutEvent(self, event):
         if self._capturing:
@@ -358,6 +458,7 @@ class FeatureCard(QFrame):
         super().__init__(parent)
         self.setObjectName("FeatureCard")
         self.setProperty("active", "false")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         content = QVBoxLayout(self)
         content.setContentsMargins(
@@ -368,7 +469,11 @@ class FeatureCard(QFrame):
         top = QHBoxLayout()
         top.setSpacing(10)
         self.key_cap = KeyCap(hotkey)
+        self.key_cap.setAccessibleName(f"{title}启停快捷键")
         self.key_cap.keyCaptured.connect(self.hotkeyRequested.emit)
+        hotkey_label = QLabel("启停键")
+        hotkey_label.setObjectName("FieldLabel")
+        top.addWidget(hotkey_label)
         top.addWidget(self.key_cap)
         top.addStretch(1)
 
@@ -377,6 +482,7 @@ class FeatureCard(QFrame):
         top.addWidget(self.state_label)
 
         self.switch = ToggleSwitch()
+        self.switch.setAccessibleName(f"{title}开关")
         self.switch.toggled.connect(self._on_toggled)
         top.addWidget(self.switch)
         content.addLayout(top)
@@ -386,10 +492,10 @@ class FeatureCard(QFrame):
         title_label.setFont(theme.ui_font(theme.SIZE_TITLE, QFont.Weight.DemiBold))
         content.addWidget(title_label)
 
-        note_label = QLabel(note)
-        note_label.setObjectName("CardNote")
-        note_label.setWordWrap(True)
-        content.addWidget(note_label)
+        self.note_label = QLabel(note)
+        self.note_label.setObjectName("CardNote")
+        self.note_label.setWordWrap(True)
+        content.addWidget(self.note_label)
 
         self.error = ErrorBanner()
         content.addWidget(self.error)
@@ -397,7 +503,6 @@ class FeatureCard(QFrame):
         self._extra = QVBoxLayout()
         self._extra.setSpacing(9)
         content.addLayout(self._extra)
-        content.addStretch(1)
 
         self.set_active(False)
 
@@ -419,6 +524,9 @@ class FeatureCard(QFrame):
 
     def set_hotkey(self, key: str):
         self.key_cap.set_key(key)
+
+    def set_note(self, note: str):
+        self.note_label.setText(note)
 
     def set_error(self, message: str):
         self.error.show_message(message)
@@ -458,15 +566,51 @@ class ErrorBanner(QFrame):
         self.show()
 
 
+class SelectSettings(QWidget):
+    """蓝、黄、红三张牌各自的选牌按键。"""
+
+    cardKeyChanged = Signal(str, str)
+
+    def __init__(self, card_keys: dict[str, str], parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        self.fields = {}
+        for color, label in (("blue", "蓝牌"), ("yellow", "黄牌"), ("red", "红牌")):
+            column = QVBoxLayout()
+            column.setSpacing(5)
+            card_label = QLabel(label)
+            card_label.setObjectName("CardKeyLabel")
+            card_label.setProperty("cardColor", color)
+            column.addWidget(card_label)
+            field = KeyField(card_keys[color])
+            field.setAccessibleName(f"{label}选牌按键")
+            field.keyCaptured.connect(
+                lambda key, chosen=color: self.cardKeyChanged.emit(chosen, key)
+            )
+            card_label.setBuddy(field)
+            column.addWidget(field, 0, Qt.AlignmentFlag.AlignLeft)
+            self.fields[color] = field
+            layout.addLayout(column, 1)
+
+    def set_card_key(self, color: str, key: str):
+        self.fields[color].set_key(key)
+
+
 class MoveSettingsRow(QWidget):
-    """自动移动的按键与间隔。改完立刻生效，没有"应用"按钮。"""
+    """自由移动的按键与间隔；改完立刻生效。"""
 
     keyChanged = Signal(str)
     intervalChanged = Signal(int)
 
     def __init__(self, key: str, interval_ms: int, parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(9)
+
+        layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
@@ -474,8 +618,10 @@ class MoveSettingsRow(QWidget):
         key_label.setObjectName("FieldLabel")
         layout.addWidget(key_label)
 
-        self.key_field = KeyField(key)
+        self.key_field = KeyField(key, allow_mouse=False)
+        self.key_field.setAccessibleName("游戏内鼠标移动按键")
         self.key_field.keyCaptured.connect(self.keyChanged.emit)
+        key_label.setBuddy(self.key_field)
         layout.addWidget(self.key_field)
 
         layout.addSpacing(12)
@@ -493,9 +639,24 @@ class MoveSettingsRow(QWidget):
         self.interval_field.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.interval_field.setFont(theme.num_font(theme.SIZE_BODY, QFont.Weight.DemiBold))
         self.interval_field.setFixedWidth(96)
+        self.interval_field.setAccessibleName("自由移动连发间隔，毫秒")
+        interval_label.setBuddy(self.interval_field)
         # 打字打到一半不要立刻生效，编辑结束或点上下箭头才生效
         self.interval_field.setKeyboardTracking(False)
         self.interval_field.valueChanged.connect(self.intervalChanged.emit)
         layout.addWidget(self.interval_field)
 
         layout.addStretch(1)
+        outer.addLayout(layout)
+
+        self.guide = QLabel()
+        self.guide.setObjectName("CardNote")
+        self.guide.setWordWrap(True)
+        outer.addWidget(self.guide)
+        self.set_guidance(key, interval_ms)
+
+    def set_guidance(self, key: str, interval_ms: int):
+        self.guide.setText(
+            f"先在游戏内将「鼠标移动按键」设为 {pretty_key(key)}（与上方按键一致）。"
+            f"开启后按住鼠标右键，程序每 {interval_ms} 毫秒发送一次 {pretty_key(key)}。"
+        )

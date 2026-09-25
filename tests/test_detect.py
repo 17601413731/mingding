@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import sys
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 
@@ -69,6 +71,89 @@ class YellowCardDetectionTest(unittest.TestCase):
             if engine.is_yellow_fast(measure(filename)[0])
         ]
         self.assertEqual(accepted, ["yellow_card.png"])
+
+
+class CardColorDetectionTest(unittest.TestCase):
+    def test_each_card_matches_only_its_target(self):
+        for target in ("blue", "yellow", "red"):
+            for sample in ("blue", "yellow", "red"):
+                with self.subTest(target=target, sample=sample):
+                    hsv, _, _ = measure(f"{sample}_card.png")
+                    self.assertEqual(engine.is_card_color(hsv, target), sample == target)
+
+    def test_background_image_is_not_a_card(self):
+        hsv, _, _ = measure("img.png")
+        for color in ("blue", "yellow", "red"):
+            with self.subTest(color=color):
+                self.assertFalse(engine.is_card_color(hsv, color))
+
+    def test_full_screen_samples_match_the_card_roi(self):
+        for sample in ("blue", "yellow", "red"):
+            frame = cv2.imread(str(ASSETS / f"{sample}.png"))
+            hsv = engine.bgr_roi_to_hsv(frame, engine.ROI_CARD)
+            for target in ("blue", "yellow", "red"):
+                with self.subTest(sample=sample, target=target):
+                    self.assertEqual(engine.is_card_color(hsv, target), sample == target)
+
+    def test_red_wraps_across_hue_boundary(self):
+        import numpy as np
+
+        for hue in (0, 179):
+            with self.subTest(hue=hue):
+                hsv = np.full((10, 10, 3), (hue, 200, 200), dtype=np.uint8)
+                self.assertTrue(engine.is_card_color(hsv, "red"))
+
+
+class SelectionLoopTest(unittest.TestCase):
+    def test_each_card_key_selects_its_own_color(self):
+        selection = {"blue": "f6", "yellow": "e", "red": "f7"}
+        frames = [cv2.imread(str(ASSETS / "img.png"))] + [
+            cv2.imread(str(ASSETS / f"{color}_card.png"))
+            for color in ("yellow", "red", "blue")
+        ]
+
+        for target, target_key in selection.items():
+            with self.subTest(target=target):
+                class Capture:
+                    def __init__(self):
+                        self.frames = iter(frames)
+
+                    def grab_bgr(self):
+                        return next(self.frames)
+
+                    def stop(self):
+                        pass
+
+                class StopAfterFrames:
+                    def __init__(self):
+                        self.count = 0
+
+                    def is_set(self):
+                        self.count += 1
+                        return self.count > len(frames)
+
+                calls = 0
+
+                def pressed(key):
+                    nonlocal calls
+                    frame_index = calls // len(selection)
+                    calls += 1
+                    return frame_index == 0 and key == target_key
+
+                enabled = threading.Event()
+                enabled.set()
+                with (
+                    mock.patch.object(engine, "ScreenCapture", return_value=Capture()),
+                    mock.patch.object(engine, "bgr_roi_to_hsv", side_effect=lambda frame, roi: cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)),
+                    mock.patch.object(engine, "is_skill_ready", return_value=True),
+                    mock.patch.object(engine.input_keys, "is_pressed", side_effect=pressed),
+                    mock.patch.object(engine, "press_confirm") as confirm,
+                    mock.patch.object(engine.time, "perf_counter", side_effect=(0.0, 0.1, 0.2, 0.3)),
+                    mock.patch.object(engine.time, "sleep"),
+                ):
+                    engine.capture_loop(enabled, StopAfterFrames(), selection, threading.Event())
+
+                self.assertEqual(confirm.call_count, 2)
 
 
 class CaptureGeometryTest(unittest.TestCase):

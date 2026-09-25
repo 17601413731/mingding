@@ -1,14 +1,6 @@
 """命定 · 采集与操作引擎
 
-原 main_fast_dxcam.py 的采集、状态机、自动移动三部分原样搬到这里，
-行为不变，只有两处刻意的改动：
-
-1. 自动移动按下的键与间隔改为从外面传进来的可变设置读取（可配置、可热改），
-   不再是写死的 "n" 和模块常量。
-2. 采集器初始化失败现在也会上报给界面。原来 ScreenCapture() 建在 try 之外，
-   dxcam 起不来时异常直接死在子线程里，界面只会一直显示"已关闭"，看不出哪里错。
-
-本模块不依赖任何界面框架，notify 只是一个普通回调。
+检测、采集与输入不依赖界面框架；notify 是普通回调。
 """
 
 from __future__ import annotations
@@ -18,18 +10,29 @@ import time
 
 import cv2
 import dxcam
-import keyboard
 import numpy as np
 import pydirectinput
+
+import input_keys
 
 # ===================== 屏幕区域 (x, y, w, h)，需按分辨率标定 =====================
 ROI_CARD = (854, 996, 33, 34)
 ROI_SKILL = (854, 996, 33, 34)
 
-# ===================== 黄牌 HSV 阈值 =====================
+# ===================== 牌色 HSV 阈值（依据 assets/*_card.png）=====================
 LOWER_YELLOW = np.array([15, 140, 150])
 UPPER_YELLOW = np.array([35, 255, 255])
 YELLOW_RATIO_THRESHOLD = 0.15
+CARD_RANGES = {
+    "blue": ((np.array([100, 55, 100]), np.array([135, 255, 255])),),
+    "yellow": ((LOWER_YELLOW, UPPER_YELLOW),),
+    # OpenCV 的 H 是 0..179；红色跨过色相首尾，必须合并两个区间。
+    "red": (
+        (np.array([0, 120, 80]), np.array([10, 255, 255])),
+        (np.array([170, 120, 80]), np.array([179, 255, 255])),
+    ),
+}
+CARD_RATIO_THRESHOLD = YELLOW_RATIO_THRESHOLD
 
 # ===================== 技能是否就绪 =====================
 S_THRESHOLD = 119
@@ -46,9 +49,8 @@ TARGET_FPS = 180
 DISABLED_DELAY = 0.05
 
 # ===================== 键位 =====================
-TRIGGER_KEY = "e"    # 手动触发选牌
-CONFIRM_KEY = "w"    # 认出黄牌后按下
-VK_RBUTTON = 0x02    # 自动移动的触发条件：按住鼠标右键
+CONFIRM_KEY = "w"    # 开始轮牌、认出目标牌后锁定
+VK_RBUTTON = 0x02    # 自由移动的触发条件：按住鼠标右键
 
 STATE_IDLE = 0
 STATE_SELECTING = 1
@@ -100,19 +102,23 @@ def is_skill_ready(hsv_img):
     return ratio > READY_RATIO and center_ok
 
 
-def is_yellow_fast(hsv_img):
-    mask = cv2.inRange(hsv_img, LOWER_YELLOW, UPPER_YELLOW)
+def is_card_color(hsv_img, color):
+    """目标色须同时覆盖足够面积且落在图像中心，避免背景误判。"""
+    ranges = CARD_RANGES[color]
+    mask = cv2.inRange(hsv_img, *ranges[0])
+    for lower, upper in ranges[1:]:
+        mask = cv2.bitwise_or(mask, cv2.inRange(hsv_img, lower, upper))
     ratio = cv2.countNonZero(mask) / mask.size
 
     h, w = hsv_img.shape[:2]
-    center = hsv_img[h // 2, w // 2]
-    center_ok = (
-        LOWER_YELLOW[0] <= center[0] <= UPPER_YELLOW[0]
-        and LOWER_YELLOW[1] <= center[1] <= UPPER_YELLOW[1]
-        and LOWER_YELLOW[2] <= center[2] <= UPPER_YELLOW[2]
-    )
+    center_ok = bool(mask[h // 2, w // 2])
 
-    return ratio > YELLOW_RATIO_THRESHOLD and center_ok
+    return ratio > CARD_RATIO_THRESHOLD and center_ok
+
+
+def is_yellow_fast(hsv_img):
+    """保留原接口，供现有黄牌回归测试使用。"""
+    return is_card_color(hsv_img, "yellow")
 
 
 def press_confirm():
@@ -141,13 +147,15 @@ class ScreenCapture:
             self.camera.stop()
 
 
-def capture_loop(enabled_event, stop_event, notify=_noop):
-    """选牌状态机：按 E 触发 → 高速找黄牌 → 认出后按 W 锁定。"""
+def capture_loop(enabled_event, stop_event, selection, capture_paused, notify=_noop):
+    """每种牌各有触发键；本次选牌只锁定按键所对应的颜色。"""
     capture = None
     state = STATE_IDLE
     select_start_time = 0.0
     lock_until = 0.0
-    yellow_count = 0
+    match_count = 0
+    target_card = None
+    trigger_armed = True
 
     try:
         capture = ScreenCapture(CAPTURE_REGION)
@@ -155,7 +163,15 @@ def capture_loop(enabled_event, stop_event, notify=_noop):
         while not stop_event.is_set():
             if not enabled_event.is_set():
                 state = STATE_IDLE
-                yellow_count = 0
+                match_count = 0
+                trigger_armed = False
+                time.sleep(DISABLED_DELAY)
+                continue
+
+            if capture_paused.is_set():
+                state = STATE_IDLE
+                match_count = 0
+                trigger_armed = False
                 time.sleep(DISABLED_DELAY)
                 continue
 
@@ -166,7 +182,16 @@ def capture_loop(enabled_event, stop_event, notify=_noop):
 
             now = time.perf_counter()
 
-            if keyboard.is_pressed(TRIGGER_KEY) and state == STATE_IDLE:
+            pressed_colors = [
+                color for color, key in selection.items() if input_keys.is_pressed(key)
+            ]
+            if not pressed_colors:
+                trigger_armed = True
+            elif len(pressed_colors) > 1:
+                trigger_armed = False
+
+            if state == STATE_IDLE and trigger_armed and len(pressed_colors) == 1:
+                trigger_armed = False
                 hsv_skill = bgr_roi_to_hsv(frame, ROI_SKILL_LOCAL)
 
                 if not is_skill_ready(hsv_skill):
@@ -175,24 +200,25 @@ def capture_loop(enabled_event, stop_event, notify=_noop):
 
                 press_confirm()
                 state = STATE_SELECTING
+                target_card = pressed_colors[0]
                 select_start_time = now
-                yellow_count = 0
+                match_count = 0
                 time.sleep(AFTER_TRIGGER_DELAY)
                 continue
 
             if state == STATE_SELECTING:
                 if now - select_start_time > SELECT_WINDOW:
                     state = STATE_IDLE
-                    yellow_count = 0
+                    match_count = 0
                 else:
                     hsv_card = bgr_roi_to_hsv(frame, ROI_CARD_LOCAL)
 
-                    if is_yellow_fast(hsv_card):
-                        yellow_count += 1
+                    if is_card_color(hsv_card, target_card):
+                        match_count += 1
                     else:
-                        yellow_count = 0
+                        match_count = 0
 
-                    if yellow_count >= CONFIRM_FRAMES:
+                    if match_count >= CONFIRM_FRAMES:
                         press_confirm()
                         state = STATE_LOCKED
                         lock_until = now + LOCK_COOLDOWN

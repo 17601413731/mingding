@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""命定 · PyInstaller 打包配置（onedir）
+r"""命定 · PyInstaller 打包配置（onedir）
 
 用 onedir 而不是 onefile：PySide6 打成单文件后每次启动都要把上百 MB 解包到临时目录，
 冷启动会拖到好几秒，对一个游戏辅助工具来说不能接受。onedir 启动约一秒。
@@ -83,6 +83,9 @@ SKIP_BINARIES = (
     'Qt6Svg',
     'Qt6VirtualKeyboard',
     'opencv_videoio_ffmpeg',
+    # 本机 PATH 的 Poppler 会把同名 ICU DLL 混进来；Qt6Core 应使用 Windows 自带版本。
+    'icuuc.dll',
+    'icudt78.dll',
 )
 
 a.binaries = [

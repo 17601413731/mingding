@@ -11,17 +11,27 @@ import os
 import sys
 from pathlib import Path
 
+import input_keys
+
 DEFAULTS = {
     "hotkey_select": "f2",      # 选牌总开关热键
-    "hotkey_move": "f3",        # 自动移动总开关热键
-    "move_key": "n",            # 自动移动时反复按下的键
-    "move_interval_ms": 100,    # 自动移动的连发间隔
+    "card_key_blue": "f6",      # 按此键选择蓝牌
+    "card_key_yellow": "e",     # 保留原来的黄牌触发键
+    "card_key_red": "f7",       # 按此键选择红牌
+    "hotkey_move": "f3",        # 自由移动总开关热键
+    "move_key": "n",            # 自由移动时反复按下的键
+    "move_interval_ms": 100,    # 自由移动的连发间隔
 }
 
+CARD_COLORS = ("blue", "yellow", "red")
 MOVE_INTERVAL_MIN_MS = 20
 MOVE_INTERVAL_MAX_MS = 1000
 
-_KEY_FIELDS = ("hotkey_select", "hotkey_move", "move_key")
+_KEY_FIELDS = (
+    "hotkey_select", "hotkey_move", "move_key",
+    "card_key_blue", "card_key_yellow", "card_key_red",
+)
+_FALLBACK_KEYS = ("f6", "f7", "f8", "f9", "f10", "e", "z", "x", "c")
 
 
 def config_path() -> Path:
@@ -43,6 +53,32 @@ def _clean(raw: object) -> dict:
         value = raw.get(name)
         if isinstance(value, str) and value.strip():
             cfg[name] = value.strip().lower()
+
+    # 兼容上一版“一个触发键 + 一个目标牌”：旧触发键分配给当时选中的牌。
+    legacy_color = raw.get("target_card", "yellow")
+    legacy_key = raw.get("select_trigger_key")
+    legacy_field = None
+    if isinstance(legacy_color, str) and legacy_color.lower() in CARD_COLORS:
+        legacy_field = f"card_key_{legacy_color.lower()}"
+    if (
+        legacy_field and legacy_field not in raw
+        and isinstance(legacy_key, str) and legacy_key.strip()
+    ):
+        cfg[legacy_field] = legacy_key.strip().lower()
+
+    # 手工修改配置时也保持按键唯一；优先保留旧版正在使用的选牌键。
+    card_fields = [f"card_key_{color}" for color in CARD_COLORS]
+    if legacy_field and legacy_field not in raw and legacy_key:
+        card_fields.remove(legacy_field)
+        card_fields.insert(0, legacy_field)
+    used = {"w", "mouse_right"}
+    for field in ("hotkey_select", "hotkey_move", "move_key", *card_fields):
+        if cfg[field] in used or (field == "move_key" and input_keys.is_mouse_key(cfg[field])):
+            cfg[field] = next(
+                candidate for candidate in (DEFAULTS[field], *_FALLBACK_KEYS)
+                if candidate not in used
+            )
+        used.add(cfg[field])
 
     ms = raw.get("move_interval_ms")
     if isinstance(ms, (int, float)):

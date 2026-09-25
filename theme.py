@@ -1,11 +1,9 @@
 """命定 · 设计令牌
 
-配色只有一种强调色相：金色。但分成两级，这个分级本身就是语义：
+常态强调仍用黄铜；蓝、黄、红只用在三张牌的按键标签中表达牌色：
 
     BRASS  黄铜 —— 常态。开启状态、可点的角标、输入框聚焦。
-    CARD   牌黄 —— 只留给"刚认出黄牌"的那一瞬间，以及品牌标记里的那张牌。
-
-牌黄稀缺，所以它一亮就说明事情发生了。别把它们混用，混用之后两个都变成装饰。
+    CARD   牌黄 —— 默认目标牌和品牌标记。
 
 底色用深靛蓝黑而不是中性黑，这是卡牌大师自己的色域，金色压在上面不刺眼。
 """
@@ -20,7 +18,9 @@ INK = "#0F1220"       # 窗口底
 FELT = "#171B2E"      # 牌面（比窗口底亮一级）
 EDGE = "#272C46"      # 描边与关闭态
 BRASS = "#C9A227"     # 常态强调：黄铜
-CARD = "#F2C230"      # 命中瞬间：牌黄
+CARD = "#F2C230"      # 黄牌标签与品牌标记
+BLUE_CARD = "#8DB8FF" # 蓝牌标签
+RED_CARD = "#FF8F83"  # 红牌标签，区别于错误橙红
 CHALK = "#E9EAF2"     # 主文字
 ASH = "#868CA6"       # 次要文字
 EMBER = "#DC5A3C"     # 仅错误
@@ -162,6 +162,10 @@ QLineEdit#KeyField:hover, QSpinBox#IntervalField:hover {
     border: 1px solid $BRASS;
 }
 
+QLineEdit#KeyField:focus, QSpinBox#IntervalField:focus {
+    border: 1px solid $BRASS;
+}
+
 QLineEdit#KeyField[capturing="true"] {
     color: $BRASS;
     border: 1px solid $BRASS;
@@ -179,6 +183,11 @@ QSpinBox#IntervalField::up-button, QSpinBox#IntervalField::down-button {
 QLabel#FieldLabel {
     color: $ASH;
 }
+
+/* ---------- 独立选牌按键 ---------- */
+QLabel#CardKeyLabel[cardColor="blue"] { color: $BLUE_CARD; }
+QLabel#CardKeyLabel[cardColor="yellow"] { color: $CARD; }
+QLabel#CardKeyLabel[cardColor="red"] { color: $RED_CARD; }
 
 /* ---------- 错误 ---------- */
 QFrame#ErrorBanner {
@@ -246,6 +255,9 @@ QToolTip {
     FELT=FELT,
     EDGE=EDGE,
     BRASS=BRASS,
+    CARD=CARD,
+    BLUE_CARD=BLUE_CARD,
+    RED_CARD=RED_CARD,
     CHALK=CHALK,
     ASH=ASH,
     EMBER=EMBER,
