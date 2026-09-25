@@ -1,6 +1,6 @@
 """命定 · 配置读写
 
-配置存在 exe（或源码目录）同级的 config.json，删掉它会自动重建为默认值。
+配置保存在用户 AppData；首次运行会迁移旧版 exe 同目录的 config.json。
 只负责读写与合法性校验，不认识任何界面。
 """
 
@@ -15,9 +15,9 @@ import input_keys
 
 DEFAULTS = {
     "hotkey_select": "f2",      # 选牌总开关热键
-    "card_key_blue": "f6",      # 按此键选择蓝牌
+    "card_key_blue": "mouse_x2",  # 蓝牌默认鼠标侧键 2
     "card_key_yellow": "e",     # 保留原来的黄牌触发键
-    "card_key_red": "f7",       # 按此键选择红牌
+    "card_key_red": "mouse_x1",   # 红牌默认鼠标侧键 1
     "hotkey_move": "f3",        # 自由移动总开关热键
     "move_key": "n",            # 自由移动时反复按下的键
     "move_interval_ms": 100,    # 自由移动的连发间隔
@@ -35,7 +35,14 @@ _FALLBACK_KEYS = ("f6", "f7", "f8", "f9", "f10", "e", "z", "x", "c")
 
 
 def config_path() -> Path:
-    """打包后放在 exe 旁边，开发时放在源码目录。"""
+    """放在用户可写的固定位置，更新或移动程序时不会丢失。"""
+    appdata = os.environ.get("APPDATA")
+    base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    return base / "mingding" / "config.json"
+
+
+def legacy_config_path() -> Path:
+    """旧版配置位于 exe（或源码）旁边，仅用于首次迁移。"""
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
     else:
@@ -90,12 +97,16 @@ def _clean(raw: object) -> dict:
 
 
 def load() -> dict:
-    """读配置；文件不存在时顺手写出默认配置，方便用户直接编辑。"""
+    """优先读 AppData；没有时迁移旧版配置或创建默认配置。"""
     path = config_path()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        cfg = dict(DEFAULTS)
+        try:
+            raw = json.loads(legacy_config_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = None
+        cfg = _clean(raw)
         save(cfg)
         return cfg
     except (OSError, ValueError):
@@ -108,6 +119,7 @@ def save(cfg: dict) -> bool:
     path = config_path()
     tmp = path.with_suffix(".json.tmp")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(
             json.dumps(_clean(cfg), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

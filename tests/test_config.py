@@ -23,17 +23,50 @@ class ConfigTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self._original_path = config.config_path
+        self._original_legacy_path = config.legacy_config_path
         self.path = Path(self._tmp.name) / "config.json"
+        self.legacy_path = Path(self._tmp.name) / "legacy" / "config.json"
         config.config_path = lambda: self.path
+        config.legacy_config_path = lambda: self.legacy_path
 
     def tearDown(self):
         config.config_path = self._original_path
+        config.legacy_config_path = self._original_legacy_path
         self._tmp.cleanup()
 
     def test_missing_file_falls_back_to_defaults_and_creates_it(self):
         self.assertFalse(self.path.exists())
         self.assertEqual(config.load(), config.DEFAULTS)
         self.assertTrue(self.path.exists())
+
+    def test_config_path_uses_appdata(self):
+        from unittest import mock
+
+        with mock.patch.dict("os.environ", {"APPDATA": str(Path(self._tmp.name) / "Roaming")}, clear=False):
+            self.assertEqual(
+                self._original_path(),
+                Path(self._tmp.name) / "Roaming" / "mingding" / "config.json",
+            )
+
+    def test_migrates_old_config_once(self):
+        self.legacy_path.parent.mkdir()
+        self.legacy_path.write_text(
+            json.dumps({"card_key_blue": "q", "card_key_red": "r", "move_interval_ms": 250}),
+            encoding="utf-8",
+        )
+        loaded = config.load()
+        self.assertEqual(loaded["card_key_blue"], "q")
+        self.assertEqual(loaded["card_key_red"], "r")
+        self.assertEqual(loaded["move_interval_ms"], 250)
+        self.assertTrue(self.path.exists())
+        self.legacy_path.write_text("{}", encoding="utf-8")
+        self.assertEqual(config.load(), loaded)
+
+    def test_save_creates_config_directory_and_survives_reload(self):
+        self.path = Path(self._tmp.name) / "Roaming" / "mingding" / "config.json"
+        saved = dict(config.DEFAULTS, card_key_blue="q", card_key_red="r")
+        self.assertTrue(config.save(saved))
+        self.assertEqual(config.load(), saved)
 
     def test_round_trip(self):
         saved = dict(
@@ -54,9 +87,9 @@ class ConfigTest(unittest.TestCase):
     def test_old_config_gains_selection_defaults(self):
         self.path.write_text(json.dumps({"hotkey_select": "f4", "move_key": "k"}), encoding="utf-8")
         loaded = config.load()
-        self.assertEqual(loaded["card_key_blue"], "f6")
+        self.assertEqual(loaded["card_key_blue"], "mouse_x2")
         self.assertEqual(loaded["card_key_yellow"], "e")
-        self.assertEqual(loaded["card_key_red"], "f7")
+        self.assertEqual(loaded["card_key_red"], "mouse_x1")
         self.assertEqual(loaded["hotkey_select"], "f4")
         self.assertEqual(loaded["move_key"], "k")
 
@@ -104,15 +137,15 @@ class ConfigTest(unittest.TestCase):
     def test_mouse_keys_persist_but_right_button_and_move_output_are_reserved(self):
         self.path.write_text(
             json.dumps({
-                "card_key_blue": "mouse_x1",
+                "card_key_blue": "mouse_x2",
                 "card_key_red": "mouse_right",
-                "hotkey_select": "mouse_x2",
-                "move_key": "mouse_middle",
+                "hotkey_select": "mouse_middle",
+                "move_key": "mouse_left",
             }), encoding="utf-8"
         )
         loaded = config.load()
-        self.assertEqual(loaded["card_key_blue"], "mouse_x1")
-        self.assertEqual(loaded["hotkey_select"], "mouse_x2")
+        self.assertEqual(loaded["card_key_blue"], "mouse_x2")
+        self.assertEqual(loaded["hotkey_select"], "mouse_middle")
         self.assertEqual(loaded["card_key_red"], config.DEFAULTS["card_key_red"])
         self.assertEqual(loaded["move_key"], config.DEFAULTS["move_key"])
 

@@ -429,7 +429,7 @@ class MainWindow(QWidget):
         elif not ok:
             self._config_error = True
             self.select_card.set_error(
-                "配置写不进去：程序所在目录没有写权限，改动只在本次运行有效"
+                "配置写不进去：请检查 AppData 目录的写入权限，改动只在本次运行有效"
             )
 
     # ==================== 引擎 ====================

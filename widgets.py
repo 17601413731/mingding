@@ -364,7 +364,7 @@ class KeyField(QLineEdit):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFont(theme.num_font(theme.SIZE_BODY, QFont.Weight.DemiBold))
-        self.setFixedWidth(96 if allow_mouse else 64)
+        self.setFixedWidth(104 if allow_mouse else 64)
         self.setToolTip("点一下，再按键盘键或鼠标键；Esc 取消" if allow_mouse else "点一下，再按游戏内绑定的键盘键；Esc 取消")
         self._capturing = False
         self._key = key
@@ -638,7 +638,7 @@ class MoveSettingsRow(QWidget):
         self.interval_field.setSuffix(" 毫秒")
         self.interval_field.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.interval_field.setFont(theme.num_font(theme.SIZE_BODY, QFont.Weight.DemiBold))
-        self.interval_field.setFixedWidth(96)
+        self.interval_field.setFixedWidth(112)
         self.interval_field.setAccessibleName("自由移动连发间隔，毫秒")
         interval_label.setBuddy(self.interval_field)
         # 打字打到一半不要立刻生效，编辑结束或点上下箭头才生效
